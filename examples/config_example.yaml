@@ -1,0 +1,14 @@
+# ORION example configuration
+# Reflects the configuration used in Phase 2–4A testing.
+# Packet/modulation features are not yet implemented (planned for Phase 5+).
+
+project:
+  name: ORION
+
+radio:
+  center_frequency_hz: 915000000
+  sample_rate_hz: 1000000
+  rx_bandwidth_hz: 1000000
+  tx_bandwidth_hz: 1000000
+  tx_gain_db: -40       # Phase 4A initial value; do not exceed -20 dB without review
+  rx_gain_mode: slow_attack

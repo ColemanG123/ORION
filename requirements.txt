@@ -1,0 +1,7 @@
+# Core SDR dependencies
+pyadi-iio
+pylibiio
+
+# Scientific / plotting
+numpy
+matplotlib

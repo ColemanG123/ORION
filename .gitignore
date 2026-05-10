@@ -1,0 +1,12 @@
+__pycache__/
+**/__pycache__/
+*.pyc
+.venv/
+venv/
+.claude/
+data/captures/*.npy
+*.aux
+*.log
+*.out
+*.toc
+*.synctex.gz

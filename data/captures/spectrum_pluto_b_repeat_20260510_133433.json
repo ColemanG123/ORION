@@ -1,0 +1,14 @@
+{
+  "uri": "usb:1.7.5",
+  "label": "pluto_b_repeat",
+  "timestamp": "2026-05-10T13:34:33.883358",
+  "center_freq_hz": 915000000,
+  "sample_rate_hz": 1000000,
+  "rx_bw_hz": 1000000,
+  "gain_mode": "slow_attack",
+  "gain_db_manual": null,
+  "num_samples": 131072,
+  "noise_floor_dbfs": -88.45,
+  "peak_dbfs": -43.93,
+  "peak_offset_mhz": 0.0596
+}
