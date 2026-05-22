@@ -1,0 +1,20 @@
+{
+  "phase": "Phase 5B",
+  "script": "06_offline_voice_fm_test.py",
+  "label": "scarlett_sv200_fm_hifi",
+  "timestamp": "20260522_161832",
+  "input_wav": "data\\audio\\audio_scarlett_sv200_test_20260522_160706.wav",
+  "input_sample_rate_hz": 44100,
+  "audio_out_rate_hz": 44100,
+  "iq_rate_hz": 240000,
+  "fm_deviation_hz": 15000.0,
+  "speech_lowcut_hz": 60.0,
+  "speech_highcut_hz": 8000.0,
+  "conditioned_wav": "data\\audio\\fm_scarlett_sv200_fm_hifi_20260522_161832_conditioned.wav",
+  "recovered_wav": "data\\audio\\fm_scarlett_sv200_fm_hifi_20260522_161832_recovered.wav",
+  "plot_path": "data\\audio\\fm_scarlett_sv200_fm_hifi_20260522_161832.png",
+  "iq_path": null,
+  "correlation_conditioned_vs_recovered": 0.9995135704522033,
+  "recovery_error_rms": 0.004199621733278036,
+  "rf_status": "NO SDR, NO RF, NO TRANSMISSION"
+}
