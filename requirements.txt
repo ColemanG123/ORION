@@ -5,3 +5,7 @@ pylibiio
 # Scientific / plotting
 numpy
 matplotlib
+scipy
+
+# Audio I/O
+sounddevice
