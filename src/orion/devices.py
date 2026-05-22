@@ -237,6 +237,7 @@ CANDIDATE_URIS = [
     "usb:",
     "ip:pluto.local",
     "ip:192.168.2.1",
+    "ip:192.168.3.1",
 ]
 
 
