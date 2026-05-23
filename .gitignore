@@ -10,3 +10,17 @@ data/captures/*.npy
 *.out
 *.toc
 *.synctex.gz
+
+# ORION generated experiment artifacts
+data/audio/*.wav
+data/audio/*.npy
+data/audio/*.png
+data/audio/*.json
+data/audio/sweeps/
+data/audio/diagnostics/
+data/captures/*.npy
+data/captures/*.json
+data/screenshots/*.png
+
+# Local archives / scratch
+_local_archive*/
