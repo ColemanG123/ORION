@@ -36,7 +36,6 @@ CANONICAL_SERIAL_SUFFIXES = {
 PREFERRED_STATIC_URIS = [
     "ip:192.168.3.1",
     "ip:pluto.local",
-    "ip:192.168.2.1",
 ]
 
 
@@ -60,30 +59,35 @@ def canonical_suffix(identity_or_suffix: str) -> str:
     raise ValueError(f"Cannot resolve Pluto identity/suffix: {identity_or_suffix!r}")
 
 
-def discover_iio_uris() -> list[str]:
+def discover_iio_uris(prefer_usb: bool = False) -> list[str]:
     """
-    Return candidate IIO URIs from stable guesses plus iio.scan_contexts().
+    Return candidate IIO URIs from iio.scan_contexts() plus stable IP guesses.
+
+    prefer_usb=True is useful for resolving 149, which is normally USB-only.
+    prefer_usb=False is useful for resolving e9e, which has stable IP access.
     """
     import iio
 
-    uris: list[str] = []
+    scanned: list[str] = []
 
-    def add(uri: str) -> None:
+    try:
+        scanned = list(iio.scan_contexts())
+    except Exception:
+        scanned = []
+
+    static = list(PREFERRED_STATIC_URIS)
+
+    if prefer_usb:
+        ordered = scanned + static
+    else:
+        ordered = static + scanned
+
+    uris: list[str] = []
+    for uri in ordered:
         if uri and uri not in uris:
             uris.append(uri)
 
-    for uri in PREFERRED_STATIC_URIS:
-        add(uri)
-
-    try:
-        scanned = iio.scan_contexts()
-        for uri in scanned:
-            add(uri)
-    except Exception:
-        pass
-
     return uris
-
 
 def read_context_identity(uri: str) -> tuple[str, str]:
     """
@@ -107,7 +111,7 @@ def resolve_pluto_uri(identity_or_suffix: str, verbose: bool = True) -> PlutoMat
       resolve_pluto_uri("tx").uri
     """
     suffix = canonical_suffix(identity_or_suffix)
-    candidates = discover_iio_uris()
+    candidates = discover_iio_uris(prefer_usb=(suffix.lower() == E149_SERIAL_SUFFIX.lower()))
 
     seen: list[tuple[str, str, str, str]] = []
 

@@ -2,9 +2,18 @@
 """
 08_rx_voice_fm_capture.py — ORION Phase 5C RX IQ recorder.
 
-Records finite IQ from PLUTO A for later offline FM demodulation.
+Records finite IQ from e9e for later offline FM demodulation.
 
 RX only. No transmission.
+
+Identity rule:
+  Use stable serial identity, not unstable USB paths.
+
+  Default:
+    --rx-id e9e
+
+  Optional debug override:
+    --uri <current IIO URI>
 """
 
 from __future__ import annotations
@@ -19,6 +28,12 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 ROOT = Path(__file__).resolve().parent.parent
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+from orion.pluto_identity import canonical_suffix, resolve_pluto_uri
+
 CAPTURE_DIR = ROOT / "data" / "captures"
 SCREENSHOT_DIR = ROOT / "data" / "screenshots"
 TEST_LOG = ROOT / "docs" / "test_logs" / "TEST_LOG.md"
@@ -26,11 +41,19 @@ TEST_LOG = ROOT / "docs" / "test_logs" / "TEST_LOG.md"
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="ORION Phase 5C RX IQ capture. RX only, no TX.",
+        description="ORION Phase 5C RX IQ capture from e9e. RX only, no TX.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    p.add_argument("--uri", default="ip:pluto.local", help="PLUTO A RX URI.")
-    p.add_argument("--label", default="pluto_a_voice_rx", help="Output label.")
+
+    p.add_argument("--rx-id", default="e9e", help="Stable RX identity or serial suffix. Default is e9e.")
+    p.add_argument("--uri", default=None, help="Optional direct RX URI override for debugging. Normally omit this.")
+    p.add_argument(
+        "--expect-serial-suffix",
+        default=None,
+        help="Optional expected RX serial suffix. Defaults to suffix implied by --rx-id.",
+    )
+
+    p.add_argument("--label", default="e9e_voice_rx", help="Output label.")
     p.add_argument("--freq", type=float, default=915e6, help="RX LO frequency in Hz.")
     p.add_argument("--rate", type=int, default=1_000_000, help="Sample rate in samples/s.")
     p.add_argument("--bandwidth", type=int, default=1_000_000, help="RX RF bandwidth in Hz.")
@@ -45,11 +68,43 @@ def parse_args() -> argparse.Namespace:
 def append_testlog(status: str, evidence: str, notes: str) -> None:
     ts = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
     row = (
-        f"| {ts} | Phase 5C RX | Voice FM IQ capture | "
+        f"| {ts} | Phase 5C RX | Voice FM IQ capture from e9e | "
         f"08_rx_voice_fm_capture.py | {status} | {evidence} | {notes} |"
     )
     existing = TEST_LOG.read_text(encoding="utf-8") if TEST_LOG.exists() else ""
     TEST_LOG.write_text(existing.rstrip() + "\n" + row + "\n", encoding="utf-8")
+
+
+def check_serial(uri: str, expected_suffix: str) -> tuple[str, str]:
+    try:
+        import iio
+
+        ctx = iio.Context(uri)
+        serial = ctx.attrs.get("hw_serial", "")
+        model = ctx.attrs.get("hw_model", "")
+    except Exception as exc:
+        raise RuntimeError(f"Could not open IIO context for serial check: {exc}")
+
+    if not serial.lower().endswith(expected_suffix.lower()):
+        raise RuntimeError(
+            f"Serial mismatch for {uri}. Expected suffix {expected_suffix}, got {serial!r}."
+        )
+
+    return serial, model
+
+
+def resolve_rx_uri(args: argparse.Namespace) -> tuple[str, str, str, str]:
+    expected_suffix = args.expect_serial_suffix or canonical_suffix(args.rx_id)
+
+    if args.uri:
+        uri = args.uri
+        serial, model = check_serial(uri, expected_suffix)
+        return uri, serial, model, expected_suffix
+
+    match = resolve_pluto_uri(args.rx_id, verbose=True)
+    uri = match.uri
+    serial, model = check_serial(uri, expected_suffix)
+    return uri, serial, model, expected_suffix
 
 
 def spectrum(iq: np.ndarray, fs: int, max_fft: int):
@@ -102,6 +157,13 @@ def main() -> None:
         print(f"[error] import adi failed: {exc}")
         sys.exit(1)
 
+    try:
+        rx_uri, rx_serial, rx_model, expected_suffix = resolve_rx_uri(args)
+    except Exception as exc:
+        print(f"[error] {exc}")
+        append_testlog("FAIL", "—", f"rx_id={args.rx_id} uri={args.uri} resolve_failed={exc}")
+        sys.exit(1)
+
     CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
     SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -119,16 +181,20 @@ def main() -> None:
     print("=" * 72)
     print("RX only. No transmission.")
     print()
-    print(f"URI        : {args.uri}")
-    print(f"Label      : {safe_label}")
-    print(f"Freq       : {args.freq/1e6:.6f} MHz")
-    print(f"Rate       : {args.rate/1e6:.3f} Msps")
-    print(f"Bandwidth  : {args.bandwidth/1e6:.3f} MHz")
-    print(f"Duration   : {args.duration:.2f} s")
-    print(f"Samples    : {target_samples}")
+    print(f"RX identity : {args.rx_id}")
+    print(f"Resolved URI: {rx_uri}")
+    print(f"Serial      : {rx_serial}")
+    print(f"Model       : {rx_model}")
+    print(f"Expected SN : ...{expected_suffix}")
+    print(f"Label       : {safe_label}")
+    print(f"Freq        : {args.freq/1e6:.6f} MHz")
+    print(f"Rate        : {args.rate/1e6:.3f} Msps")
+    print(f"Bandwidth   : {args.bandwidth/1e6:.3f} MHz")
+    print(f"Duration    : {args.duration:.2f} s")
+    print(f"Samples     : {target_samples}")
 
     try:
-        sdr = adi.Pluto(args.uri)
+        sdr = adi.Pluto(rx_uri)
         sdr.rx_lo = int(args.freq)
         sdr.sample_rate = int(args.rate)
         sdr.rx_rf_bandwidth = int(args.bandwidth)
@@ -138,7 +204,7 @@ def main() -> None:
             sdr.rx_hardwaregain_chan0 = float(args.gain_db)
     except Exception as exc:
         print(f"[error] RX setup failed: {exc}")
-        append_testlog("FAIL", "—", f"label={safe_label} setup_error={exc}")
+        append_testlog("FAIL", "—", f"label={safe_label} rx_uri={rx_uri} setup_error={exc}")
         sys.exit(1)
 
     print()
@@ -160,7 +226,7 @@ def main() -> None:
             break
         except Exception as exc:
             print(f"[error] RX failed: {exc}")
-            append_testlog("FAIL", "—", f"label={safe_label} rx_error={exc}")
+            append_testlog("FAIL", "—", f"label={safe_label} rx_uri={rx_uri} rx_error={exc}")
             sys.exit(1)
 
         x = np.asarray(x, dtype=np.complex64).ravel()
@@ -180,10 +246,17 @@ def main() -> None:
         "script": "08_rx_voice_fm_capture.py",
         "label": safe_label,
         "timestamp": timestamp,
-        "uri": args.uri,
+        "rx_identity": args.rx_id,
+        "resolved_uri": rx_uri,
+        "rx_serial": rx_serial,
+        "rx_model": rx_model,
+        "expected_serial_suffix": expected_suffix,
+        "manual_uri_override_used": bool(args.uri),
         "center_freq_hz": args.freq,
         "sample_rate_hz": args.rate,
         "rx_bandwidth_hz": args.bandwidth,
+        "gain_mode": args.gain_mode,
+        "gain_db": args.gain_db if args.gain_mode == "manual" else None,
         "duration_s": args.duration,
         "samples": int(len(iq)),
         "dtype": "complex64",
@@ -200,7 +273,8 @@ def main() -> None:
     append_testlog(
         "PASS",
         str(png_path.relative_to(ROOT)),
-        f"label={safe_label} uri={args.uri} samples={len(iq)} peak_offset={peak_offset/1e3:+.1f}kHz",
+        f"label={safe_label} rx_id={args.rx_id} uri={rx_uri} serial={rx_serial} "
+        f"samples={len(iq)} peak_offset={peak_offset/1e3:+.1f}kHz",
     )
 
     print("[+] IQ saved:       " + str(npy_path))

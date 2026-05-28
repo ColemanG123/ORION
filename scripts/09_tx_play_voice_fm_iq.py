@@ -8,6 +8,15 @@ Purpose:
 Default behavior:
   Dry-run only. No RF unless --yes-i-understand-rf-tx is supplied.
 
+Identity rule:
+  Use stable serial identity, not unstable USB paths.
+
+  Default:
+    --tx-id 149
+
+  Optional debug override:
+    --uri <current IIO URI>
+
 TX modes:
   1. chunked
      - Streams fixed-size chunks from Python.
@@ -34,6 +43,12 @@ from pathlib import Path
 import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+from orion.pluto_identity import canonical_suffix, resolve_pluto_uri
+
 TEST_LOG = ROOT / "docs" / "test_logs" / "TEST_LOG.md"
 
 
@@ -44,8 +59,22 @@ def parse_args() -> argparse.Namespace:
     )
 
     p.add_argument("--iq", required=True, help="Input complex64 IQ .npy file.")
-    p.add_argument("--uri", default="usb:1.6.5", help="149 TX URI for this session.")
-    p.add_argument("--expect-serial-suffix", default="149", help="Expected 149 serial suffix.")
+
+    p.add_argument(
+        "--tx-id",
+        default="149",
+        help="Stable TX identity or serial suffix. Default is 149.",
+    )
+    p.add_argument(
+        "--uri",
+        default=None,
+        help="Optional direct TX URI override for debugging. Normally omit this.",
+    )
+    p.add_argument(
+        "--expect-serial-suffix",
+        default=None,
+        help="Optional expected TX serial suffix. Defaults to suffix implied by --tx-id.",
+    )
 
     p.add_argument(
         "--tx-mode",
@@ -86,21 +115,50 @@ def append_testlog(status: str, evidence: str, notes: str) -> None:
     TEST_LOG.write_text(existing.rstrip() + "\n" + row + "\n", encoding="utf-8")
 
 
-def check_serial(uri: str, expected_suffix: str) -> str:
+def check_serial(uri: str, expected_suffix: str) -> tuple[str, str]:
     try:
         import iio
 
         ctx = iio.Context(uri)
         serial = ctx.attrs.get("hw_serial", "")
+        model = ctx.attrs.get("hw_model", "")
     except Exception as exc:
         raise RuntimeError(f"Could not open IIO context for serial check: {exc}")
 
-    if not serial.endswith(expected_suffix):
+    if not serial.lower().endswith(expected_suffix.lower()):
         raise RuntimeError(
             f"Serial mismatch for {uri}. Expected suffix {expected_suffix}, got {serial!r}."
         )
 
-    return serial
+    return serial, model
+
+
+def resolve_tx_uri(args: argparse.Namespace) -> tuple[str, str, str, str]:
+    """
+    Return (tx_uri, serial, model, expected_suffix).
+
+    Normal path:
+      --tx-id 149 -> resolve current URI by serial suffix.
+
+    Debug path:
+      --uri usb:x.y.z -> still verify serial suffix before any TX.
+    """
+    expected_suffix = args.expect_serial_suffix or canonical_suffix(args.tx_id)
+
+    if args.uri:
+        uri = args.uri
+        serial, model = check_serial(uri, expected_suffix)
+        return uri, serial, model, expected_suffix
+
+    match = resolve_pluto_uri(args.tx_id, verbose=True)
+
+    if not match.full_serial.lower().endswith(expected_suffix.lower()):
+        raise RuntimeError(
+            f"Resolver returned wrong serial for {args.tx_id}. "
+            f"Expected ...{expected_suffix}, got {match.full_serial!r}."
+        )
+
+    return match.uri, match.full_serial, match.hw_model, expected_suffix
 
 
 def load_iq(path: Path) -> np.ndarray:
@@ -111,15 +169,6 @@ def load_iq(path: Path) -> np.ndarray:
 
 
 def next_chunk(iq: np.ndarray, start: int, chunk_samples: int) -> tuple[np.ndarray, int, bool]:
-    """
-    Return the next chunk in message order.
-
-    If the chunk crosses the end of the message, wrap to the beginning and
-    concatenate so the output chunk remains continuous in intended message order.
-
-    Returns:
-      chunk, next_start, wrapped
-    """
     n = len(iq)
     stop = start + chunk_samples
 
@@ -155,14 +204,18 @@ def configure_sdr(uri: str, freq: float, rate: int, bandwidth: int, gain_db: flo
 
 
 def scaled_for_dac(iq: np.ndarray, dac_scale: float) -> np.ndarray:
-    """
-    pyadi-iio Pluto TX examples use DAC-unit-like scaling. The input IQ file is
-    normalized; this scales it to the DAC range used by previous ORION tests.
-    """
     return (iq.astype(np.complex64) * float(dac_scale)).astype(np.complex64)
 
 
-def print_summary(args: argparse.Namespace, iq_path: Path, iq: np.ndarray) -> None:
+def print_summary(
+    args: argparse.Namespace,
+    iq_path: Path,
+    iq: np.ndarray,
+    tx_uri: str,
+    tx_serial: str,
+    tx_model: str,
+    expected_suffix: str,
+) -> None:
     full_duration = len(iq) / args.rate
     chunk_duration = args.chunk_samples / args.rate
     peak = float(np.max(np.abs(iq))) if len(iq) else 0.0
@@ -174,8 +227,11 @@ def print_summary(args: argparse.Namespace, iq_path: Path, iq: np.ndarray) -> No
     print("Default is dry-run. RF requires explicit confirmation.")
     print()
     print(f"IQ file             : {iq_path}")
-    print(f"149 URI             : {args.uri}")
-    print(f"Expected serial     : ...{args.expect_serial_suffix}")
+    print(f"TX identity         : {args.tx_id}")
+    print(f"Resolved TX URI     : {tx_uri}")
+    print(f"Resolved serial     : {tx_serial}")
+    print(f"Resolved model      : {tx_model}")
+    print(f"Expected serial     : ...{expected_suffix}")
     print(f"TX mode             : {args.tx_mode}")
     print(f"TX LO               : {args.freq/1e6:.6f} MHz")
     print(f"Sample rate         : {args.rate/1e6:.3f} Msps")
@@ -197,7 +253,7 @@ def print_summary(args: argparse.Namespace, iq_path: Path, iq: np.ndarray) -> No
         print()
     else:
         approx_bytes = len(iq) * np.dtype(np.complex64).itemsize
-        print(f"Cyclic buffer       : full message")
+        print("Cyclic buffer       : full message")
         print(f"Cyclic samples      : {len(iq)}")
         print(f"Cyclic payload      : {approx_bytes/1024/1024:.1f} MiB before driver handling")
         print()
@@ -225,7 +281,7 @@ def validate_args(args: argparse.Namespace, iq: np.ndarray) -> None:
         )
 
 
-def tx_chunked(args: argparse.Namespace, iq: np.ndarray, iq_path: Path, notes: str) -> None:
+def tx_chunked(args: argparse.Namespace, iq: np.ndarray, iq_path: Path, tx_uri: str, notes: str) -> None:
     sdr = None
     sent_chunks = 0
     wraps = 0
@@ -233,7 +289,7 @@ def tx_chunked(args: argparse.Namespace, iq: np.ndarray, iq_path: Path, notes: s
 
     try:
         print("[tx] Connecting to 149...")
-        sdr = configure_sdr(args.uri, args.freq, args.rate, args.bandwidth, args.gain_db)
+        sdr = configure_sdr(tx_uri, args.freq, args.rate, args.bandwidth, args.gain_db)
         sdr.tx_cyclic_buffer = False
 
         append_testlog("STARTED", str(iq_path), notes)
@@ -302,19 +358,12 @@ def tx_chunked(args: argparse.Namespace, iq: np.ndarray, iq_path: Path, notes: s
         sys.exit(1)
 
 
-def tx_cyclic_full(args: argparse.Namespace, iq: np.ndarray, iq_path: Path, notes: str) -> None:
-    """
-    Load the entire message into one cyclic TX buffer.
-
-    This is the preferred Phase 5C voice test mode because it eliminates Python
-    chunk-to-chunk timing gaps. 149 repeats the full IQ message in hardware until
-    tx_destroy_buffer() is called.
-    """
+def tx_cyclic_full(args: argparse.Namespace, iq: np.ndarray, iq_path: Path, tx_uri: str, notes: str) -> None:
     sdr = None
 
     try:
         print("[tx] Connecting to 149...")
-        sdr = configure_sdr(args.uri, args.freq, args.rate, args.bandwidth, args.gain_db)
+        sdr = configure_sdr(tx_uri, args.freq, args.rate, args.bandwidth, args.gain_db)
 
         print("[tx] Preparing full-message cyclic buffer...")
         tx_full = scaled_for_dac(iq, args.dac_scale)
@@ -398,8 +447,6 @@ def main() -> None:
         print(f"[error] Could not load IQ: {exc}")
         sys.exit(1)
 
-    print_summary(args, iq_path, iq)
-
     try:
         validate_args(args, iq)
     except Exception as exc:
@@ -407,18 +454,21 @@ def main() -> None:
         sys.exit(1)
 
     try:
-        serial = check_serial(args.uri, args.expect_serial_suffix)
-        print(f"[+] 149 serial check passed: {serial}")
+        tx_uri, tx_serial, tx_model, expected_suffix = resolve_tx_uri(args)
     except Exception as exc:
         print(f"[error] {exc}")
-        append_testlog("FAIL", str(iq_path), f"uri={args.uri} serial_check_failed={exc}")
+        append_testlog("FAIL", str(iq_path), f"tx_id={args.tx_id} uri={args.uri} resolve_failed={exc}")
         sys.exit(1)
+
+    print_summary(args, iq_path, iq, tx_uri, tx_serial, tx_model, expected_suffix)
+    print(f"[+] 149 serial check passed: {tx_serial}")
 
     full_duration = len(iq) / args.rate
     peak = float(np.max(np.abs(iq))) if len(iq) else 0.0
 
     notes = (
-        f"mode={args.tx_mode} uri={args.uri} gain={args.gain_db:.1f}dB "
+        f"mode={args.tx_mode} tx_id={args.tx_id} resolved_uri={tx_uri} "
+        f"serial={tx_serial} gain={args.gain_db:.1f}dB "
         f"tx_duration={args.tx_duration:.3f}s message={full_duration:.3f}s "
         f"peak_norm={peak:.4f} dac_scale={args.dac_scale:.0f}"
     )
@@ -442,9 +492,9 @@ def main() -> None:
         time.sleep(1.0)
 
     if args.tx_mode == "chunked":
-        tx_chunked(args, iq, iq_path, notes)
+        tx_chunked(args, iq, iq_path, tx_uri, notes)
     elif args.tx_mode == "cyclic-full":
-        tx_cyclic_full(args, iq, iq_path, notes)
+        tx_cyclic_full(args, iq, iq_path, tx_uri, notes)
     else:
         print(f"[error] Unknown tx-mode: {args.tx_mode}")
         sys.exit(1)
